@@ -102,6 +102,14 @@ export class CAGService {
     this.eventBus = eventBus;
     this.logger = new Logger('CAGService');
 
+    if (typeof this.client.embed !== 'function') {
+      const errorMsg = "CRITICAL: LLMClient does not have a functional 'embed' method. CAGService similarity features will be disabled or will fail.";
+      this.logger.error(errorMsg);
+      console.error(errorMsg); // Ensure visibility
+      // Optionally, throw an error here to prevent service from starting in a broken state
+      // throw new Error(errorMsg);
+    }
+
     // Start periodic cache maintenance
     this.startCacheMaintenance();
   }
@@ -114,6 +122,21 @@ export class CAGService {
     const queryId = this.generateQueryId(query);
 
     this.performanceMetrics.totalQueries++;
+
+    if (typeof this.client.embed !== 'function') {
+      this.logger.error("CAGService.query: LLMClient 'embed' method is not available. Cannot perform similarity-based caching. Falling back to RAG or direct generation if possible.");
+      // Fallback: attempt RAG without similarity caching, or error out
+      const ragResult = await this.generateRAGResponse(query); // This itself might fail if it also tries to use embeddings indirectly
+      return {
+        ...ragResult,
+        cached: false,
+        cacheHitType: 'none',
+        processingTime: Date.now() - startTime,
+        cacheSize: this.cache.size,
+        memoryUsage: this.getMemoryUsage(),
+        confidence: ragResult.confidence || 0.1 // Low confidence as it's not from a tuned cache hit
+      };
+    }
 
     try {
       // Set timeout for the entire operation
@@ -614,8 +637,12 @@ export class CAGService {
       return this.embeddingCache.get(query)!;
     }
 
-    if (!(this.client?.embed)) {
-      throw new Error('Embedding client or embed method is not available');
+    // Check was moved to constructor and query method, but an explicit check here is still good defense.
+    if (typeof this.client.embed !== 'function') {
+      const errorMsg = "CRITICAL: LLMClient 'embed' method is not available in getQueryEmbedding. This should have been caught earlier.";
+      this.logger.error(errorMsg);
+      console.error(errorMsg);
+      throw new Error(errorMsg);
     }
 
     const embedding = await this.client.embed(query);

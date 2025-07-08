@@ -13,12 +13,14 @@ export class LogAnalysisService {
     this.logger = logger;
   }
 
-  public async analyzeAuditLogs(): Promise<any> {
+  public async analyzeAuditLogs(filters?: Partial<any>): Promise<any> { // Added filters parameter
     try {
       this.logger.info('Fetching audit logs for analysis...');
-      const logs = await this.auditService.queryLogs({});
+      // TODO: Pass filters to auditService.queryLogs once it supports them.
+      // For now, it still fetches all logs, which is a performance issue.
+      const logs = await this.auditService.queryLogs(filters || {});
       if (logs.length === 0) {
-        this.logger.info('No audit logs to analyze.');
+        this.logger.info('No audit logs to analyze with the given filters.');
         return [];
       }
 

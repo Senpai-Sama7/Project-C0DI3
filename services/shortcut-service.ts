@@ -271,9 +271,35 @@ export class ShortcutService {
 
     try {
       // Check authentication if required
-      if (shortcut.requiresAuth && context?.user) {
-        // Authentication check would be handled by the CLI
+      if (shortcut.requiresAuth && (!context?.user || !context?.session)) {
+         // TODO: Integrate with AuthService.verifyToken(context.token) if a token is passed in context
+         // For now, assuming if context.user is not present, auth has failed or was not performed.
+        throw new Error(`Shortcut '${shortcut.name}' requires authentication. User not authenticated.`);
       }
+
+      // TODO: Implement permission checking using AuthService.checkPermission
+      // if (shortcut.permissions && context?.user) {
+      //   const authService = context.authService; // Assuming AuthService instance is passed in context
+      //   if (authService) {
+      //     let hasRequiredPermission = false;
+      //     for (const perm of shortcut.permissions) {
+      //        // Assuming perm is like "resource:action" e.g., "tools:execute"
+      //        const [resource, action] = perm.split(':');
+      //        if (await authService.checkPermission(context.user.id, resource, action)) {
+      //          hasRequiredPermission = true;
+      //          break;
+      //        }
+      //     }
+      //     if (!hasRequiredPermission) {
+      //       throw new Error(`User does not have required permissions for shortcut '${shortcut.name}'. Required: ${shortcut.permissions.join(', ')}`);
+      //     }
+      //   } else {
+      //       this.logger.warn(`AuthService not found in context for shortcut '${shortcut.name}'. Cannot verify permissions.`);
+      //       // Depending on policy, could throw error here or proceed with caution.
+      //   }
+      // }
+      this.logger.warn(`ShortcutService.executeShortcut: Permission check for shortcut '${shortcut.name}' is currently a TODO. Enforce permissions using AuthService.`);
+
 
       // Execute the command
       const result = await this.executeCommand(shortcut.command, args, context);

@@ -3,10 +3,15 @@ import { Logger } from '../utils/logger';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as bcrypt from 'bcrypt'; // Added for password hashing
+import * as jwt from 'jsonwebtoken'; // Added for proper JWT handling
+
+const SALT_ROUNDS = 10; // For bcrypt
 
 export interface User {
   id: string;
   username: string;
+  passwordHash?: string; // Added for storing hashed passwords
   email?: string;
   role: UserRole;
   permissions: Permission[];
@@ -154,7 +159,25 @@ export class AuthService {
       }
 
       // Verify password
-      const isValidPassword = await this.verifyPassword(password, user);
+      if (!user.passwordHash) {
+        this.logger.warn(`User ${username} has no password hash set. Cannot authenticate.`);
+        await this.logAuditEvent({
+          userId: user.id,
+          username: user.username,
+          action: 'LOGIN_ATTEMPT',
+          resource: 'auth',
+          details: { reason: 'no_password_hash_set' },
+          ipAddress,
+          userAgent,
+          sessionId,
+          success: false,
+          errorMessage: 'User account not properly configured.',
+          duration: Date.now() - startTime
+        });
+        return { success: false, error: 'User account not properly configured.' };
+      }
+
+      const isValidPassword = await this.verifyPassword(password, user.passwordHash);
       if (!isValidPassword) {
         // Increment failed attempts
         user.failedLoginAttempts++;
@@ -336,11 +359,23 @@ export class AuthService {
   /**
    * Create new user
    */
-  async createUser(userData: Omit<User, 'id' | 'createdAt' | 'lastLogin' | 'failedLoginAttempts'>): Promise<User> {
+  async createUser(userData: Omit<User, 'id' | 'createdAt' | 'lastLogin' | 'failedLoginAttempts' | 'passwordHash'>, password?: string): Promise<User> {
     const userId = this.generateUserId();
+    let passwordHash: string | undefined = undefined;
+
+    if (password) {
+      if (password.length < this.config.passwordMinLength) {
+        throw new Error(`Password must be at least ${this.config.passwordMinLength} characters long.`);
+      }
+      passwordHash = await this.hashPassword(password);
+    } else {
+      this.logger.warn(`Creating user ${userData.username} without a password. They will not be able to log in until a password is set.`);
+    }
+
     const user: User = {
       ...userData,
       id: userId,
+      passwordHash,
       createdAt: new Date(),
       lastLogin: new Date(),
       failedLoginAttempts: 0,
@@ -348,15 +383,15 @@ export class AuthService {
     };
 
     this.users.set(userId, user);
-    this.saveUsers();
+    this.saveUsers(); // Ensure this is async if file ops become async
 
     await this.logAuditEvent({
-      userId: 'system',
-      username: 'system',
+      userId: 'system', // Or an admin user ID if available
+      username: 'system', // Or an admin username
       action: 'USER_CREATED',
       resource: 'auth',
-      details: { newUserId: userId, username: user.username, role: user.role },
-      sessionId: 'system',
+      details: { newUserId: userId, username: user.username, role: user.role, passwordSet: !!passwordHash },
+      sessionId: 'system', // Or admin session ID
       success: true,
       duration: 0
     });
@@ -551,9 +586,13 @@ export class AuthService {
   }
 
   private createDefaultUsers(): void {
+    // Default admin user is created without a password hash.
+    // A password must be set through a separate administrative process (e.g., setup script, admin command).
+    this.logger.warn("Creating default admin user 'admin'. This user has NO password set and cannot log in until one is configured externally.");
     const adminUser: User = {
       id: 'admin',
       username: 'admin',
+      passwordHash: undefined, // No default password
       role: UserRole.ADMIN,
       permissions: [
         { resource: '*', action: '*' }
@@ -565,11 +604,14 @@ export class AuthService {
     };
 
     this.users.set('admin', adminUser);
-    this.saveUsers();
+    this.saveUsers(); // Ensure this is async if file ops become async
   }
 
   private saveUsers(): void {
     try {
+      // TODO: Implement encryption for users.json at rest.
+      // This data contains sensitive user information (even password hashes are sensitive).
+      this.logger.warn("Saving users.json in plaintext. This is NOT secure for production. Implement encryption at rest.");
       const usersData = Array.from(this.users.values());
       fs.writeFileSync(this.usersFile, JSON.stringify(usersData, null, 2));
     } catch (error) {
@@ -599,6 +641,9 @@ export class AuthService {
 
   private saveSessions(): void {
     try {
+      // TODO: Implement encryption for sessions.json at rest.
+      // Session data can also be sensitive.
+      this.logger.warn("Saving sessions.json in plaintext. This is NOT secure for production. Implement encryption at rest.");
       const sessionsData = Array.from(this.sessions.values());
       fs.writeFileSync(this.sessionsFile, JSON.stringify(sessionsData, null, 2));
     } catch (error) {
@@ -616,10 +661,22 @@ export class AuthService {
     );
   }
 
-  private async verifyPassword(password: string, user: User): Promise<boolean> {
-    // In a real implementation, you would hash the password and compare
-    // For now, we'll use a simple comparison (NOT for production)
-    return password === 'password'; // Replace with proper password verification
+  private async verifyPassword(password: string, hash: string): Promise<boolean> {
+    try {
+      return await bcrypt.compare(password, hash);
+    } catch (error) {
+      this.logger.error('Error verifying password hash:', error);
+      return false;
+    }
+  }
+
+  private async hashPassword(password: string): Promise<string> {
+    try {
+      return await bcrypt.hash(password, SALT_ROUNDS);
+    } catch (error) {
+      this.logger.error('Error hashing password:', error);
+      throw new Error('Password hashing failed.');
+    }
   }
 
   private createSession(user: User, ipAddress?: string, userAgent?: string): Session {
@@ -651,19 +708,35 @@ export class AuthService {
 
     // In a real implementation, you would use a proper JWT library
     // For now, we'll create a simple token
-    return Buffer.from(JSON.stringify(payload)).toString('base64');
+    // return Buffer.from(JSON.stringify(payload)).toString('base64');
+    return jwt.sign(payload, this.config.jwtSecret);
   }
 
   private verifyJWT(token: string): any {
-    try {
-      const payload = JSON.parse(Buffer.from(token, 'base64').toString());
+    // try {
+    //   const payload = JSON.parse(Buffer.from(token, 'base64').toString());
 
-      if (payload.exp < Math.floor(Date.now() / 1000)) {
+    //   if (payload.exp < Math.floor(Date.now() / 1000)) {
+    //     throw new Error('Token expired');
+    //   }
+
+    //   return payload;
+    // } catch (error) {
+    //   throw new Error('Invalid token');
+    // }
+    try {
+      const decoded = jwt.verify(token, this.config.jwtSecret) as jwt.JwtPayload;
+      // jwt.verify already checks for expiration (exp claim)
+      // Additional checks can be done here if needed (e.g. issuer, audience)
+      return decoded;
+    } catch (error: any) {
+      this.logger.warn(`JWT verification failed: ${error.message}`);
+      if (error.name === 'TokenExpiredError') {
         throw new Error('Token expired');
       }
-
-      return payload;
-    } catch (error) {
+      if (error.name === 'JsonWebTokenError') {
+        throw new Error('Invalid token signature');
+      }
       throw new Error('Invalid token');
     }
   }

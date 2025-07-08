@@ -65,6 +65,14 @@ export class CybersecurityKnowledgeService {
     this.eventBus = eventBus;
     this.logger = new Logger('CybersecurityKnowledgeService');
     this.booksPath = booksPath;
+
+    if (typeof this.client.embed !== 'function') {
+      const errorMsg = "CRITICAL: LLMClient does not have a functional 'embed' method. CybersecurityKnowledgeService semantic features will be severely impaired or non-functional.";
+      this.logger.error(errorMsg);
+      console.error(errorMsg);
+      // Consider not throwing here to allow service to start with degraded functionality,
+      // but core features like semantic search will fail.
+    }
   }
 
   /**
@@ -77,11 +85,14 @@ export class CybersecurityKnowledgeService {
       // Load and process all cybersecurity books
       await this.loadCybersecurityBooks();
 
-      // Create embeddings for all concepts
-      await this.createConceptEmbeddings();
-
-      // Build relationships between concepts
-      await this.buildConceptRelationships();
+      if (typeof this.client.embed === 'function') {
+        // Create embeddings for all concepts
+        await this.createConceptEmbeddings();
+        // Build relationships between concepts
+        await this.buildConceptRelationships();
+      } else {
+        this.logger.warn("Skipping concept embeddings and relationship building as LLMClient 'embed' method is not available.");
+      }
 
       this.logger.info(`Loaded ${this.concepts.size} cybersecurity concepts`);
       this.eventBus.emit('cybersecurity-knowledge.initialized', {
@@ -269,6 +280,11 @@ export class CybersecurityKnowledgeService {
    */
   private async buildConceptRelationships(): Promise<void> {
     this.logger.info('Building concept relationships...');
+    // TODO: PERFORMANCE - This is an N^2 operation (findRelatedConcepts iterates all other concepts).
+    // For a large number of concepts, this will be extremely slow.
+    // Consider using an Approximate Nearest Neighbor (ANN) search index (e.g., from a VectorStore)
+    // or batching/optimizing this process significantly if concept count is high.
+    // For now, proceeding with the existing logic but acknowledging the performance concern.
 
     for (const concept of this.concepts.values()) {
       const related = await this.findRelatedConcepts(concept);
@@ -280,16 +296,25 @@ export class CybersecurityKnowledgeService {
    * Find related concepts for a given concept
    */
   private async findRelatedConcepts(concept: CybersecurityConcept): Promise<CybersecurityConcept[]> {
+    // TODO: PERFORMANCE - This iterates all other concepts. See note in buildConceptRelationships.
     const related: CybersecurityConcept[] = [];
 
     for (const otherConcept of this.concepts.values()) {
       if (otherConcept.id === concept.id) continue;
 
+      // Ensure embeddings exist for both concepts before calculating similarity
+      if (!concept.embedding || !otherConcept.embedding) continue;
+
       const similarity = await this.calculateConceptSimilarity(concept, otherConcept);
-      if (similarity > 0.7) {
+      if (similarity > 0.7) { // Similarity threshold
         related.push(otherConcept);
       }
     }
+
+    // Sort by similarity (descending) before slicing, if score is available and needed for top N
+    // This example assumes calculateConceptSimilarity returns a score that can be used for sorting.
+    // If not, the simple push and slice is fine for a basic implementation.
+    // related.sort((a, b) => b.score - a.score); // Assuming concept objects get a temporary score property
 
     return related.slice(0, 5); // Limit to top 5 related concepts
   }
@@ -348,8 +373,9 @@ export class CybersecurityKnowledgeService {
    * Find relevant concepts using semantic search
    */
   private async findRelevantConcepts(query: KnowledgeQuery): Promise<CybersecurityConcept[]> {
-    if (!this.client || !this.client.embed) {
-      this.logger.warn('Client or embed method not available');
+    if (typeof this.client.embed !== 'function') {
+      this.logger.error("CybersecurityKnowledgeService.findRelevantConcepts: LLMClient 'embed' method is not available. Cannot perform semantic search.");
+      // Fallback: could attempt a keyword search or return empty.
       return [];
     }
 

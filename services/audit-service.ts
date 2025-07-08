@@ -111,13 +111,29 @@ export class AuditService {
   }
 
   public async queryLogs(filter: Partial<AuditLogEntry>): Promise<AuditLogEntry[]> {
+    // TODO: CRITICAL PERFORMANCE BOTTLENECK - Reading and decrypting the entire log file for every query.
+    // This will not scale. Consider:
+    // 1. Using a proper logging database/system (ELK, Splunk).
+    // 2. If file-based, implement indexing (e.g., by date) and allow range queries.
+    // 3. Stream-process the file, decrypting and filtering line-by-line, especially for targeted queries.
+    // 4. For now, this implementation remains but is unsuitable for production with large logs.
+
     const logContent = await fs.readFile(this.logFilePath, 'utf-8');
     if (!logContent) {
       return [];
     }
 
     const lines = logContent.trim().split('\n');
-    const allLogs = lines.map(line => JSON.parse(this.decrypt(line)) as AuditLogEntry);
+    const allLogs: AuditLogEntry[] = [];
+    for (const line of lines) {
+      if (line.trim() === '') continue;
+      try {
+        allLogs.push(JSON.parse(this.decrypt(line)) as AuditLogEntry);
+      } catch (e: any) {
+        console.warn(`AuditService: Failed to decrypt or parse log line. Skipping. Error: ${e.message}`);
+        // Optionally, store corrupted lines elsewhere for investigation
+      }
+    }
 
     if (Object.keys(filter).length === 0) {
       return allLogs;

@@ -39,14 +39,61 @@ export class LearnModeService {
   private readonly client: LLMClient;
   private readonly logger: Logger;
   private readonly eventBus: EventBus;
-  private readonly missions: Map<string, TrainingMission> = new Map();
-  private readonly userProgress: Map<string, UserProgress> = new Map();
+import * as fs from 'fs-extra'; // For persistence
+import * as path from 'path';   // For persistence
 
-  constructor(client: LLMClient, logger: Logger, eventBus: EventBus) {
+export interface TrainingMission {
+  id: string;
+// ... (rest of TrainingMission interface) ...
+// (Ensure all interface definitions are at the top or imported)
+// For brevity, assuming interfaces are defined above or imported.
+
+export class LearnModeService {
+  private readonly client: LLMClient;
+  private readonly logger: Logger;
+  private readonly eventBus: EventBus;
+  private readonly missions: Map<string, TrainingMission> = new Map();
+  private userProgress: Map<string, UserProgress> = new Map(); // Made mutable for loading
+  private readonly userProgressFilePath: string;
+
+  constructor(client: LLMClient, logger: Logger, eventBus: EventBus, dataPath: string = './data/learning') {
     this.client = client;
     this.logger = logger;
     this.eventBus = eventBus;
+    this.userProgressFilePath = path.join(dataPath, 'user_progress.json');
+    fs.ensureDirSync(dataPath); // Ensure data directory exists
+
     this.initializeMissions();
+    this.loadUserProgress(); // Load progress on startup
+  }
+
+  private async loadUserProgress(): Promise<void> {
+    try {
+      if (await fs.pathExists(this.userProgressFilePath)) {
+        const fileContent = await fs.readFile(this.userProgressFilePath, 'utf-8');
+        const progressData = JSON.parse(fileContent) as Array<[string, UserProgress]>;
+        this.userProgress = new Map(progressData.map(([userId, data]) => [
+            userId,
+            { ...data, lastActivity: new Date(data.lastActivity) } // Ensure date is properly parsed
+        ]));
+        this.logger.info(`User progress loaded from ${this.userProgressFilePath}`);
+      } else {
+        this.logger.info('No user progress file found. Starting with empty progress data.');
+      }
+    } catch (error: any) {
+      this.logger.error(`Failed to load user progress: ${error.message}`, error);
+      this.userProgress = new Map(); // Start fresh on error
+    }
+  }
+
+  private async saveUserProgress(): Promise<void> {
+    try {
+      const progressData = Array.from(this.userProgress.entries());
+      await fs.writeFile(this.userProgressFilePath, JSON.stringify(progressData, null, 2));
+      this.logger.info(`User progress saved to ${this.userProgressFilePath}`);
+    } catch (error: any) {
+      this.logger.error(`Failed to save user progress: ${error.message}`, error);
+    }
   }
 
   private initializeMissions(): void {
@@ -161,6 +208,7 @@ export class LearnModeService {
     userProgress.currentMission = missionId;
     userProgress.lastActivity = new Date();
     this.userProgress.set(userId, userProgress);
+    await this.saveUserProgress(); // Save progress
 
     this.eventBus.emit('learn-mode.mission.started', {
       userId,
@@ -333,6 +381,7 @@ export class LearnModeService {
         userProgress.currentMission = undefined;
         userProgress.lastActivity = new Date();
         this.userProgress.set(userId, userProgress);
+         await this.saveUserProgress(); // Save progress
 
         this.eventBus.emit('learn-mode.mission.completed', {
           userId,
@@ -432,6 +481,8 @@ export class LearnModeService {
         learningPath: 'beginner',
         lastActivity: new Date()
       });
+      // Note: Persistence is handled by calling methods like startMission/completeMission
+      // after they have potentially created/modified userProgress.
     }
     return this.userProgress.get(userId)!;
   }
